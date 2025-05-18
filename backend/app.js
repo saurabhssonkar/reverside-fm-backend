@@ -5,21 +5,40 @@
 /* Please follow mediasoup installation requirements */
 /* https://mediasoup.org/documentation/v3/mediasoup/installation/ */
 import express from 'express'
-const app = express()
-
 import https from 'httpolyglot'
 import fs from 'fs'
 import path from 'path'
 import  {exec}  from 'child_process';
 import { fileURLToPath } from 'url';
-
-
-const __dirname = path.resolve()
-
+import { sendToKafka } from './video-uploader/kafkaProducer.js';
+import { startKafkaConsumer } from './video-uploader/kafkaConsumer.js';
+import redis from './video-uploader/redisClient.js';
+import { v4 as uuidv4 } from 'uuid';
 // const cors = require('cors');
-
 import { Server } from 'socket.io'
 import mediasoup from 'mediasoup'
+import { resetInactivityTimer } from './utils/resetInactivityTimer.js'
+import AWS from 'aws-sdk';
+import dotenv from 'dotenv';
+
+
+
+
+const app = express();
+dotenv.config()
+
+const __dirname = path.resolve()
+startKafkaConsumer();
+// const s3 = new AWS.S3();
+const s3 = new AWS.S3({
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID ,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY, 
+  region: process.env.AWS_REGION ,
+  httpOptions: {
+    timeout: 60000 // 1 minute timeout
+  }
+});
+
 
 
 // app.use(cors());
@@ -447,23 +466,54 @@ connections.on('connection', async socket => {
     await consumer.resume()
   })
   const filePath = path.join(__dirname, `recordings/recorded_${socket.id}.webm`);
+  let uploadInfo = null;
+  let partNumber = 1;
+  let inactivityTimer = null;
 
 
-  socket.on('recording-chunk', (arrayBuffer) => {
+  socket.on('recording-chunk', async (arrayBuffer) => {
 
-    // You can store this chunk or write it to a file
-    console.log(`📦 Received chunk (${arrayBuffer.length} bytes)`);
+    // // You can store this chunk or write it to a file
+    // console.log(`📦 Received chunk (${arrayBuffer.length} bytes)`);
 
-    const buffer = Buffer.from(arrayBuffer);
-    fs.appendFile(filePath, buffer, (err) => {
-      if (err){
-        console.error('Error saving chunk:', err);
+    // const buffer = Buffer.from(arrayBuffer);
+    // fs.appendFile(filePath, buffer, (err) => {
+    //   if (err){
+    //     console.error('Error saving chunk:', err);
 
-      } else{
-        console.log(`✅ Chunk saved to ${filePath}`);
+    //   } else{
+        // console.log(`check`);
 
-      }
+    //   }
+    // });
+
+    if (!uploadInfo) {
+      // console.log("saurabh")
+      const fileKey = `recordings/${uuidv4()}.webm`;
+      const res = await s3.createMultipartUpload({
+        Bucket: process.env.AWS_S3_BUCKET,
+        Key: fileKey
+      }).promise();
+
+      uploadInfo = { uploadId: res.UploadId, key: fileKey };
+      // console.log("uploadInfo",uploadInfo)
+      await redis.set(`${socket.id}-upload`, JSON.stringify(uploadInfo));
+      // console.log('🚀 Multipart upload started:', fileKey);
+    }
+
+    const chunk = Buffer.from(arrayBuffer).toString('base64');
+    await sendToKafka('video-chunks', {
+      uploadId: uploadInfo.uploadId,
+      key: uploadInfo.key,
+      partNumber,
+      chunk
     });
+
+    // console.log(`📤 Sent part ${partNumber}`);
+    partNumber++;
+
+    await resetInactivityTimer(inactivityTimer,uploadInfo,redis,s3); // update timer
+  
   });
   
 })
@@ -555,3 +605,47 @@ app.post('/merge-videos', async (req, res) => {
 });
 
 // Serve the merged folder publicly
+
+
+// import express from 'express';
+// import https from 'httpolyglot';
+// import fs from 'fs';
+// import path from 'path';
+// import { fileURLToPath } from 'url';
+// import { Server } from 'socket.io';
+// import mediasoupSetup from './mediasoup/mediasoup-setup.js';
+// import recordingRoutes from './controller/recording-routes.js';
+
+// const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// const app = express();
+
+// // SSL configuration
+// const options = {
+//   key: fs.readFileSync('./server/ssl/key.pem', 'utf-8'),
+//   cert: fs.readFileSync('./server/ssl/cert.pem', 'utf-8')
+// };
+
+// // Create HTTPS server
+// const httpsServer = https.createServer(options, app);
+// httpsServer.listen(3000, () => {
+//   console.log('Server listening on port: 3000');
+// });
+
+// // Configure Socket.IO
+// const io = new Server(httpsServer, {
+//   cors: {
+//     origin: "http://localhost:5173",
+//     methods: ["GET", "POST"],
+//     credentials: true,
+//   }
+// });
+
+// // Initialize Mediasoup
+// mediasoupSetup(io);
+
+// // Setup recording routes
+// recordingRoutes(app, __dirname);
+
+// // Serve static files
+// app.use(express.static('public'));
+// app.use(express.json());
