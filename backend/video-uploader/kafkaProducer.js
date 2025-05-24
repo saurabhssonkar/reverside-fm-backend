@@ -12,7 +12,7 @@ const producer = kafka.producer({
 });
 
 export async function sendToKafka(topic, message) {
-    // console.log("message" , message)
+    console.log("message" , message)
   await producer.connect();
   await producer.send({
     topic,

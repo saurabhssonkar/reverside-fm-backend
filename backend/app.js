@@ -8,7 +8,7 @@ import express from 'express'
 import https from 'httpolyglot'
 import fs from 'fs'
 import path from 'path'
-import  {exec}  from 'child_process';
+import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import { sendToKafka } from './video-uploader/kafkaProducer.js';
 import { startKafkaConsumer } from './video-uploader/kafkaConsumer.js';
@@ -28,12 +28,12 @@ const app = express();
 dotenv.config()
 
 const __dirname = path.resolve()
-startKafkaConsumer();
+// startKafkaConsumer();
 // const s3 = new AWS.S3();
 const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID ,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY, 
-  region: process.env.AWS_REGION ,
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  region: process.env.AWS_REGION,
   httpOptions: {
     timeout: 60000 // 1 minute timeout
   }
@@ -74,7 +74,7 @@ httpsServer.listen(3000, () => {
   console.log('listening on port: ' + 3000)
 })
 
-const io = new Server(httpsServer,{
+const io = new Server(httpsServer, {
   cors: {
     origin: "http://localhost:5173", // adjust this based on your frontend
     methods: ["GET", "POST"],
@@ -157,12 +157,14 @@ connections.on('connection', async socket => {
     return items
   }
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async() => {
     // do some cleanup
     console.log('peer disconnected')
     consumers = removeItems(consumers, socket.id, 'consumer')
     producers = removeItems(producers, socket.id, 'producer')
     transports = removeItems(transports, socket.id, 'transport')
+    completeUpload(socket.id).catch(console.error);
+
 
     const { roomName } = peers[socket.id]
     delete peers[socket.id]
@@ -204,7 +206,7 @@ connections.on('connection', async socket => {
     // mediaCodecs -> defined above
     // appData -> custom application data - we are not supplying any
     // none of the two are required
-    
+
     let router1
     let peers = []
     if (rooms[roomName]) {
@@ -213,7 +215,7 @@ connections.on('connection', async socket => {
     } else {
       router1 = await worker.createRouter({ mediaCodecs, })
     }
-    
+
     console.log(`Router ID: ${router1.id}`, peers.length)
 
     rooms[roomName] = {
@@ -358,7 +360,7 @@ connections.on('connection', async socket => {
   // see client's socket.emit('transport-connect', ...)
   socket.on('transport-connect', ({ dtlsParameters }) => {
     console.log('DTLS PARAMS... ', { dtlsParameters })
-    
+
     getTransport(socket.id).connect({ dtlsParameters })
   })
 
@@ -387,7 +389,7 @@ connections.on('connection', async socket => {
     // Send back to the client the Producer's id
     callback({
       id: producer.id,
-      producersExist: producers.length>1 ? true : false
+      producersExist: producers.length > 1 ? true : false
     })
   })
 
@@ -468,54 +470,169 @@ connections.on('connection', async socket => {
   const filePath = path.join(__dirname, `recordings/recorded_${socket.id}.webm`);
   let uploadInfo = null;
   let partNumber = 1;
-  let inactivityTimer = null;
+  const INACTIVITY_TIMEOUT = 30000; // 30 seconds timeout
+  let inactivityTimer;
+  const partETags = [];
 
 
-  socket.on('recording-chunk', async (arrayBuffer) => {
 
-    // // You can store this chunk or write it to a file
-    // console.log(`📦 Received chunk (${arrayBuffer.length} bytes)`);
+  // socket.on('recording-chunk', async (arrayBuffer) => {
 
-    // const buffer = Buffer.from(arrayBuffer);
-    // fs.appendFile(filePath, buffer, (err) => {
-    //   if (err){
-    //     console.error('Error saving chunk:', err);
+  //   // // You can store this chunk or write it to a file
+  //   console.log(`📦 Received chunk (${arrayBuffer.length} bytes)`);
 
-    //   } else{
-        // console.log(`check`);
+  //   // const buffer = Buffer.from(arrayBuffer);
+  //   // fs.appendFile(filePath, buffer, (err) => {
+  //   //   if (err){
+  //   //     console.error('Error saving chunk:', err);
 
-    //   }
-    // });
+  //   //   } else{
+  //       // console.log(`check`);
 
-    if (!uploadInfo) {
-      // console.log("saurabh")
-      const fileKey = `recordings/${uuidv4()}.webm`;
-      const res = await s3.createMultipartUpload({
-        Bucket: process.env.AWS_S3_BUCKET,
-        Key: fileKey
-      }).promise();
+  //   //   }
+  //   // });
 
-      uploadInfo = { uploadId: res.UploadId, key: fileKey };
-      // console.log("uploadInfo",uploadInfo)
-      await redis.set(`${socket.id}-upload`, JSON.stringify(uploadInfo));
-      // console.log('🚀 Multipart upload started:', fileKey);
+  //   // if (!uploadInfo) {
+  //   //   // console.log("saurabh")
+  //   //   const fileKey = `recordings/${uuidv4()}.webm`;
+  //   //   const res = await s3.createMultipartUpload({
+  //   //     Bucket: process.env.AWS_S3_BUCKET,
+  //   //     Key: fileKey
+  //   //   }).promise();
+
+  //   //   uploadInfo = { uploadId: res.UploadId, key: fileKey };
+  //   //   // console.log("uploadInfo",uploadInfo)
+  //   //   await redis.set(`${socket.id}-upload`, JSON.stringify(uploadInfo));
+  //   //   // console.log('🚀 Multipart upload started:', fileKey);
+  //   // }
+
+  //   // const chunk = Buffer.from(arrayBuffer).toString('base64');
+  //   // await sendToKafka('video-chunks', {
+  //   //   uploadId: uploadInfo.uploadId,
+  //   //   key: uploadInfo.key,
+  //   //   partNumber,
+  //   //   chunk
+  //   // });
+
+  //   // console.log(`📤 Sent part ${partNumber}`);
+  //   partNumber++;
+
+  //   await resetInactivityTimer(inactivityTimer,uploadInfo,redis,s3); // update timer
+
+  // });
+
+  const uploads = new Map();
+
+socket.on('recording-chunk', async (arrayBuffer) => {
+  try {
+    // Get current upload state or create new one
+    let uploadState = uploads.get(socket.id) || await initUpload(socket.id);
+    
+    // Skip if upload was already completed
+    if (uploadState.completed) {
+      console.log('⚠️ Ignoring chunk for completed upload');
+      return;
     }
 
-    const chunk = Buffer.from(arrayBuffer).toString('base64');
-    await sendToKafka('video-chunks', {
-      uploadId: uploadInfo.uploadId,
-      key: uploadInfo.key,
-      partNumber,
-      chunk
+    // Upload the chunk
+    const uploadRes = await s3.uploadPart({
+      Bucket: process.env.AWS_S3_BUCKET,
+      Key: uploadState.key,
+      UploadId: uploadState.uploadId,
+      PartNumber: uploadState.partNumber,
+      Body: Buffer.from(arrayBuffer)
+    }).promise();
+
+    uploadState.partETags.push({
+      ETag: uploadRes.ETag,
+      PartNumber: uploadState.partNumber
     });
 
-    // console.log(`📤 Sent part ${partNumber}`);
-    partNumber++;
+    console.log(`✅ Uploaded part ${uploadState.partNumber} for ${uploadState.key}`);
+    uploadState.partNumber++;
 
-    await resetInactivityTimer(inactivityTimer,uploadInfo,redis,s3); // update timer
+  } catch (error) {
+    console.error('❌ Upload error:', error);
+    await abortUpload(socket.id);
+  }
+});
+
+async function initUpload(socketId) {
+  const fileKey = `recordings/${uuidv4()}.webm`;
+  const res = await s3.createMultipartUpload({
+    Bucket: process.env.AWS_S3_BUCKET,
+    Key: fileKey,
+    ContentType: 'video/webm'
+  }).promise();
+
+  const uploadState = {
+    uploadId: res.UploadId,
+    key: fileKey,
+    startTime: Date.now(),
+    partNumber: 1,
+    partETags: [],
+    completed: false,
+    socketId: socketId // Store reference to prevent undefined
+  };
   
-  });
-  
+  uploads.set(socketId, uploadState);
+  console.log('🚀 Upload initiated:', fileKey);
+  return uploadState;
+}
+
+// socket.on('disconnect', () => {
+//   console.log('Client disconnected - completing upload');
+//   completeUpload(socket.id).catch(console.error);
+// });
+
+async function completeUpload(socketId) {
+  const uploadState = uploads.get(socketId);
+  if (!uploadState || uploadState.completed) return;
+
+  try {
+    // Mark as completed first to prevent new chunks
+    uploadState.completed = true;
+    
+    console.log(`🏁 Completing upload with ${uploadState.partETags.length} parts for ${uploadState.key}`);
+    
+    await s3.completeMultipartUpload({
+      Bucket: process.env.AWS_S3_BUCKET,
+      Key: uploadState.key,
+      UploadId: uploadState.uploadId,
+      MultipartUpload: {
+        Parts: uploadState.partETags.sort((a, b) => a.PartNumber - b.PartNumber)
+      }
+    });
+
+    const duration = (Date.now() - uploadState.startTime) / 1000;
+    console.log(`🎉 Upload completed in ${duration}s: ${uploadState.key}`);
+
+  } catch (error) {
+    console.error('❌ Completion failed:', error);
+    throw error;
+  } finally {
+    // Delay cleanup to handle late chunks
+    setTimeout(() => uploads.delete(socketId), 5000);
+  }
+}
+
+async function abortUpload(socketId) {
+  const uploadState = uploads.get(socketId);
+  if (!uploadState || uploadState.completed) return;
+
+  try {
+    await s3.abortMultipartUpload({
+      Bucket: process.env.AWS_S3_BUCKET,
+      Key: uploadState.key,
+      UploadId: uploadState.uploadId
+    }).promise();
+    console.log('⚠️ Upload aborted for', uploadState.key);
+  } catch (error) {
+    console.error('❌ Abort failed:', error);
+  } finally {
+    uploads.delete(socketId);
+  }
+}
 })
 
 const createWebRtcTransport = async (router) => {

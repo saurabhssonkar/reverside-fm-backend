@@ -29,8 +29,8 @@ export async function startKafkaConsumer() {
           console.log('📦 Kafka message:');
 
           const data = JSON.parse(message.value.toString());
-          const { uploadId, key, partNumber, chunk } = data;
-          // console.log("chunk",chunk)
+          const { uploadId, key, partNumber, chunk,isLastPart } = data;
+          console.log("isLastPart",isLastPart)
 
           if (!uploadId || !key || !chunk || !Number.isInteger(partNumber)) {
             throw new Error('❌ Invalid message format');
