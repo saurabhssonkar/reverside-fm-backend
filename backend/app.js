@@ -76,7 +76,7 @@ httpsServer.listen(3000, () => {
 
 const io = new Server(httpsServer, {
   cors: {
-    origin: "http://localhost:5173", // adjust this based on your frontend
+    origin: "http://localhost:8081", // adjust this based on your frontend
     methods: ["GET", "POST"],
     credentials: true,
   }
@@ -192,6 +192,7 @@ connections.on('connection', async socket => {
         isAdmin: false,   // Is this Peer the Admin?
       }
     }
+    console.log("peers",peers)
 
     // get Router RTP Capabilities
     const rtpCapabilities = router1.rtpCapabilities
@@ -292,20 +293,51 @@ connections.on('connection', async socket => {
     }
   }
 
+  // const addProducer = (producer, roomName) => {
+  //   producers = [
+  //     ...producers,
+  //     { socketId: socket.id, producer, roomName, }
+  //   ]
+  //   console.log("@@",producers)
+
+
+  //   peers[socket.id] = {
+  //     ...peers[socket.id],
+  //     producers: [
+  //       ...peers[socket.id].producers,
+  //       producer.id,
+  //     ]
+  //   }
+  // }
+
   const addProducer = (producer, roomName) => {
+  // Check if a producer with the same socket ID already exists
+  const existingIndex = producers.findIndex(p => p.socketId === socket.id);
+  
+  if (existingIndex === -1) {
+    // If not exists, add new producer
     producers = [
       ...producers,
-      { socketId: socket.id, producer, roomName, }
-    ]
-
-    peers[socket.id] = {
-      ...peers[socket.id],
-      producers: [
-        ...peers[socket.id].producers,
-        producer.id,
-      ]
-    }
+      { socketId: socket.id, producer, roomName }
+    ];
+  } else {
+    // If exists, update the existing producer
+    producers = producers.map((p, index) => 
+      index === existingIndex ? { ...p, producer, roomName } : p
+    );
   }
+
+  console.log("@@", producers);
+
+  // Update peers object
+  peers[socket.id] = {
+    ...peers[socket.id],
+    producers: [
+      ...(peers[socket.id]?.producers || []),
+      producer.id,
+    ]
+  };
+};
 
   const addConsumer = (consumer, roomName) => {
     // add the consumer to the consumers list
@@ -329,11 +361,17 @@ connections.on('connection', async socket => {
     const { roomName } = peers[socket.id]
 
     let producerList = []
+    console.log("####PRODUCER",producers)
+        console.log("####SOCKETID",socket.id)
+
     producers.forEach(producerData => {
       if (producerData.socketId !== socket.id && producerData.roomName === roomName) {
+        console.log("NOT INSIDE" ,producerData.socketId, socket.id)
         producerList = [...producerList, producerData.producer.id]
       }
+      console.log("OUT SIDE")
     })
+    console.log("producerList",producerList)
 
     // return the producer list back to the client
     callback(producerList)
@@ -371,6 +409,7 @@ connections.on('connection', async socket => {
       kind,
       rtpParameters,
     })
+    console.log("saurabh",producer)
 
     // add producer to the producers array
     const { roomName } = peers[socket.id]
