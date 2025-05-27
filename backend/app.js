@@ -20,6 +20,8 @@ import mediasoup from 'mediasoup'
 import { resetInactivityTimer } from './utils/resetInactivityTimer.js'
 import AWS from 'aws-sdk';
 import dotenv from 'dotenv';
+import { initialize, processVideoChunk, startConsumer, startStreamForCamera } from './StreamVideo/VideoStreamProcessor.js';
+import { initializeMultipartUpload } from './aws/S3Manager.js';
 
 
 
@@ -70,8 +72,18 @@ const options = {
 }
 
 const httpsServer = https.createServer(options, app)
-httpsServer.listen(3000, () => {
+httpsServer.listen(3000, async () => {
   console.log('listening on port: ' + 3000)
+
+   try {
+    await initialize();  // custom function you want to run after server starts
+       // initialize socket.io or any other real-time service
+
+    console.log('Server fully initialized.');
+  } catch (error) {
+    console.error('Initialization error:', error);
+    process.exit(1); // optional: stop the process if initialization fails
+  }
 })
 
 const io = new Server(httpsServer, {
@@ -140,6 +152,8 @@ const mediaCodecs = [
   },
 ]
 
+
+
 connections.on('connection', async socket => {
   console.log(socket.id)
   socket.emit('connection-success', {
@@ -163,8 +177,8 @@ connections.on('connection', async socket => {
     consumers = removeItems(consumers, socket.id, 'consumer')
     producers = removeItems(producers, socket.id, 'producer')
     transports = removeItems(transports, socket.id, 'transport')
-    completeUpload(socket.id).catch(console.error);
-
+    // completeUpload(socket.id).catch(console.error);
+    startConsumer(1)
 
     const { roomName } = peers[socket.id]
     delete peers[socket.id]
@@ -560,118 +574,62 @@ connections.on('connection', async socket => {
 
   // });
 
-  const uploads = new Map();
+  const videoChunkBuffers = new Map();
+  const initializedStreams = new Set();
+
+
 
 socket.on('recording-chunk', async (arrayBuffer) => {
   try {
-    // Get current upload state or create new one
-    let uploadState = uploads.get(socket.id) || await initUpload(socket.id);
+
+   const cameraId = "camera1"; // or derive dynamically
+    const socketId = socket.id;
+
+    // Initialize only once per camera
+    if (!initializedStreams.has(cameraId)) {
+      await startStreamForCamera(cameraId);
+      initializedStreams.add(cameraId);
+    } 
+
+    const bufferState = videoChunkBuffers.get(socketId) || { chunks: [], totalSize: 0 };
+
+    bufferState.chunks.push(arrayBuffer);
+    bufferState.totalSize += arrayBuffer.byteLength;
+
+    // Update buffer state in map
+    videoChunkBuffers.set(socketId, bufferState);
+
+
+    // If 5MB or more, combine and send to processVideoChunk
+    if (bufferState.totalSize >= 5 * 1024 * 1024) {
+      const combinedBuffer = mergeChunks(bufferState.chunks, bufferState.totalSize);
+          console.log("Current buffered size:", (bufferState.totalSize / (1024 * 1024)).toFixed(2), "MB");
+
+
+      // Call your chunk processor
+      await processVideoChunk(1, combinedBuffer);
     
-    // Skip if upload was already completed
-    if (uploadState.completed) {
-      console.log('⚠️ Ignoring chunk for completed upload');
-      return;
+
+      // Reset buffer for this socket
+      videoChunkBuffers.set(socketId, { chunks: [], totalSize: 0 });
     }
-
-    // Upload the chunk
-    const uploadRes = await s3.uploadPart({
-      Bucket: process.env.AWS_S3_BUCKET,
-      Key: uploadState.key,
-      UploadId: uploadState.uploadId,
-      PartNumber: uploadState.partNumber,
-      Body: Buffer.from(arrayBuffer)
-    }).promise();
-
-    uploadState.partETags.push({
-      ETag: uploadRes.ETag,
-      PartNumber: uploadState.partNumber
-    });
-
-    console.log(`✅ Uploaded part ${uploadState.partNumber} for ${uploadState.key}`);
-    uploadState.partNumber++;
-
+  
+    // Get current upload state or create new one
+  
   } catch (error) {
     console.error('❌ Upload error:', error);
     await abortUpload(socket.id);
   }
 });
 
-async function initUpload(socketId) {
-  const fileKey = `recordings/${uuidv4()}.webm`;
-  const res = await s3.createMultipartUpload({
-    Bucket: process.env.AWS_S3_BUCKET,
-    Key: fileKey,
-    ContentType: 'video/webm'
-  }).promise();
 
-  const uploadState = {
-    uploadId: res.UploadId,
-    key: fileKey,
-    startTime: Date.now(),
-    partNumber: 1,
-    partETags: [],
-    completed: false,
-    socketId: socketId // Store reference to prevent undefined
-  };
-  
-  uploads.set(socketId, uploadState);
-  console.log('🚀 Upload initiated:', fileKey);
-  return uploadState;
-}
 
 // socket.on('disconnect', () => {
 //   console.log('Client disconnected - completing upload');
 //   completeUpload(socket.id).catch(console.error);
 // });
 
-async function completeUpload(socketId) {
-  const uploadState = uploads.get(socketId);
-  if (!uploadState || uploadState.completed) return;
 
-  try {
-    // Mark as completed first to prevent new chunks
-    uploadState.completed = true;
-    
-    console.log(`🏁 Completing upload with ${uploadState.partETags.length} parts for ${uploadState.key}`);
-    
-    await s3.completeMultipartUpload({
-      Bucket: process.env.AWS_S3_BUCKET,
-      Key: uploadState.key,
-      UploadId: uploadState.uploadId,
-      MultipartUpload: {
-        Parts: uploadState.partETags.sort((a, b) => a.PartNumber - b.PartNumber)
-      }
-    });
-
-    const duration = (Date.now() - uploadState.startTime) / 1000;
-    console.log(`🎉 Upload completed in ${duration}s: ${uploadState.key}`);
-
-  } catch (error) {
-    console.error('❌ Completion failed:', error);
-    throw error;
-  } finally {
-    // Delay cleanup to handle late chunks
-    setTimeout(() => uploads.delete(socketId), 5000);
-  }
-}
-
-async function abortUpload(socketId) {
-  const uploadState = uploads.get(socketId);
-  if (!uploadState || uploadState.completed) return;
-
-  try {
-    await s3.abortMultipartUpload({
-      Bucket: process.env.AWS_S3_BUCKET,
-      Key: uploadState.key,
-      UploadId: uploadState.uploadId
-    }).promise();
-    console.log('⚠️ Upload aborted for', uploadState.key);
-  } catch (error) {
-    console.error('❌ Abort failed:', error);
-  } finally {
-    uploads.delete(socketId);
-  }
-}
 })
 
 const createWebRtcTransport = async (router) => {
@@ -805,3 +763,13 @@ app.post('/merge-videos', async (req, res) => {
 // // Serve static files
 // app.use(express.static('public'));
 // app.use(express.json());
+
+function mergeChunks(chunks, totalSize) {
+  const combined = new Uint8Array(totalSize);
+  let offset = 0;
+  for (let chunk of chunks) {
+    combined.set(new Uint8Array(chunk), offset);
+    offset += chunk.byteLength;
+  }
+  return combined.buffer;
+}

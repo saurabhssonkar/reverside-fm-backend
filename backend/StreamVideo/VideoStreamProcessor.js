@@ -1,12 +1,11 @@
 import { v4 as uuidv4 } from 'uuid';
-import KafkaManager from './KafkaManager.js';
-import RedisManager from './RedisManager.js';
-import S3Manager from './S3Manager.js';
-import logger from './logger.js';
+import { initializeMultipartUpload } from '../aws/S3Manager.js';
+import logger from '../logger.js';
+import { initializeKafka, sendVideoChunk, createTopicForCamera, consumer } from "../kafka/KafkaManager.js"
+import { initializeRedis, incrementChunkCount, getStreamMetadata, updateStreamStatus, setStreamMetadata } from "../Redis/RedisManager.js"
+import { uploadPart } from '../aws/S3Manager.js';
 
-const kafkaManager = new KafkaManager();
-const redisManager = new RedisManager();
-const s3Manager = new S3Manager();
+
 
 // In-memory buffer for chunks per camera
 const chunkBuffers = new Map();
@@ -18,8 +17,8 @@ const partNumbers = new Map();
 export async function initialize() {
     try {
         console.log("@@@@@@@@");
-        await kafkaManager.initialize();
-        await redisManager.initialize();
+        await initializeKafka();
+        await initializeRedis();
         logger.info('Video Stream Processor initialized successfully');
 
         // Start recovery process for interrupted uploads
@@ -34,12 +33,12 @@ export async function startStreamForCamera(cameraId) {
     try {
         const sessionId = uuidv4();
 
-        await kafkaManager.createTopicForCamera(cameraId);
+        await createTopicForCamera(cameraId);
 
-        const uploadInfo = await s3Manager.initializeMultipartUpload(cameraId, sessionId);
-        console.log("checkmultipart", uploadInfo);
+        const uploadInfo = await initializeMultipartUpload(cameraId, sessionId);
+        console.log("uploadInfo", uploadInfo);
 
-        await redisManager.setStreamMetadata(cameraId, {
+        await setStreamMetadata(cameraId, {
             sessionId,
             startTime: Date.now(),
             status: 'UPLOADING',
@@ -65,8 +64,8 @@ export async function processVideoChunk(cameraId, chunkData) {
         throw new Error(`Chunk size ${chunkData.length} exceeds maximum allowed ${MAX_KAFKA_MESSAGE_SIZE}`);
     }
     try {
-        await kafkaManager.sendVideoChunk(cameraId, chunkData);
-        await redisManager.incrementChunkCount(cameraId);
+        await sendVideoChunk(cameraId, chunkData);
+        await incrementChunkCount(cameraId);
         logger.info(`Video chunk processed for camera: ${cameraId}`);
     } catch (error) {
         logger.error(`Failed to process chunk for camera ${cameraId}: ${error.message}`);
@@ -81,21 +80,26 @@ export async function startConsumer(number) {
     try {
         console.log("saurabh eachMessage", number++);
 
-        await kafkaManager.consumer.subscribe({
+        await consumer.subscribe({
             topic: 'camera-stream',
             fromBeginning: true
         });
 
-        await kafkaManager.consumer.run({
+        await consumer.run({
             eachMessage: async ({ topic, partition, message }) => {
                 try {
                     console.log("saurabh eachMessage3", number++);
                     const chunkInfo = JSON.parse(message.value.toString());
                     const cameraId = chunkInfo.cameraId;
-                    const metadata = await redisManager.getStreamMetadata(cameraId);
+                    const metadata = await getStreamMetadata(cameraId);
+                    console.log("metadata", metadata)
+                    console.log("cameraId", cameraId)
+
+
+
 
                     partNumber++;
-                    s3Manager.uploadPart(metadata.uploadId, metadata.s3Key, partNumber, chunkInfo.chunkData, uploadedParts);
+                    await uploadPart(metadata.uploadId, metadata.s3Key, partNumber, chunkInfo.chunkData, uploadedParts);
 
                     if (!metadata) {
                         logger.warn(`No metadata found for camera: ${cameraId}`);
@@ -137,7 +141,7 @@ export async function uploadChunkIfReady(cameraId) {
 export async function uploadChunksAsPart(cameraId, chunks) {
     console.log("cameraId@", chunks);
     try {
-        const metadata = await redisManager.getStreamMetadata(cameraId);
+        const metadata = await getStreamMetadata(cameraId);
         if (!metadata) return;
 
         const combinedData = Buffer.concat(
@@ -169,7 +173,7 @@ export async function uploadChunksAsPart(cameraId, chunks) {
 
 export async function stopStreamForCamera(cameraId) {
     try {
-        const metadata = await redisManager.getStreamMetadata(cameraId);
+        const metadata = await getStreamMetadata(cameraId);
         console.log("metadata", metadata);
         const parts = uploadParts.get(cameraId) || [];
 
@@ -200,12 +204,12 @@ export async function stopStreamForCamera(cameraId) {
 
 export async function handleUploadError(cameraId, error) {
     try {
-        await redisManager.updateStreamStatus(cameraId, 'FAILED', {
+        await updateStreamStatus(cameraId, 'FAILED', {
             error: error.message,
             failedAt: Date.now()
         });
 
-        const metadata = await redisManager.getStreamMetadata(cameraId);
+        const metadata = await getStreamMetadata(cameraId);
         if (metadata && metadata.uploadId) {
             await s3Manager.abortMultipartUpload(metadata.uploadId, metadata.s3Key);
         }

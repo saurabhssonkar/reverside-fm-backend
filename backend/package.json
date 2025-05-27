@@ -20,8 +20,12 @@
     "kafkajs": "^2.2.4",
     "mediasoup": "^3.8.3",
     "mediasoup-client": "^3.6.37",
-    "socket.io": "^4.2.0",
-    "socket.io-client": "^4.2.0"
+    "socket.io-client": "^4.2.0",
+     "@aws-sdk/client-s3": "^3.816.0",
+    "redis": "^5.1.0",
+    "socket.io": "^4.8.1",
+    "uuid": "^11.1.0",
+    "winston": "^3.17.0"
   },
   "devDependencies": {
     "nodemon": "^2.0.12"

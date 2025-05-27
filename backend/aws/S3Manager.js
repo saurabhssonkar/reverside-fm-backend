@@ -1,6 +1,6 @@
 import AWS from 'aws-sdk';
-import CONFIG from './CONFIG.js';
-import logger from './logger.js';
+import CONFIG from '../CONFIG.js';
+import logger from '../logger.js';
 
 // Configure AWS S3 client
 const s3 = new AWS.S3({
@@ -11,7 +11,7 @@ const s3 = new AWS.S3({
 
 const bucketName = CONFIG.aws.bucketName;
 
-export async function initializeMultipartUpload(cameraId, sessionId) {
+ async function initializeMultipartUpload(cameraId, sessionId) {
   const s3Key = `videos/camera-saurabh`;
   try {
     const params = {
@@ -35,7 +35,7 @@ export async function initializeMultipartUpload(cameraId, sessionId) {
   }
 }
 
-export async function uploadPart(uploadId, s3Key, partNumber, chunkData, uploadedParts) {
+ async function uploadPart(uploadId, s3Key, partNumber, chunkData, uploadedParts) {
   console.log("partNumber", partNumber);
   try {
     const params = {
@@ -60,7 +60,7 @@ export async function uploadPart(uploadId, s3Key, partNumber, chunkData, uploade
   }
 }
 
-export async function completeMultipartUpload(uploadId, s3Key) {
+ async function completeMultipartUpload(uploadId, s3Key) {
   try {
     console.log("uploadid", uploadId, s3Key);
 
@@ -91,7 +91,7 @@ export async function completeMultipartUpload(uploadId, s3Key) {
   }
 }
 
-export async function abortMultipartUpload(uploadId, s3Key) {
+ async function abortMultipartUpload(uploadId, s3Key) {
   try {
     const params = {
       Bucket: bucketName,
@@ -104,4 +104,11 @@ export async function abortMultipartUpload(uploadId, s3Key) {
   } catch (error) {
     logger.error(`Failed to abort multipart upload: ${error.message}`);
   }
+}
+
+export  {
+  initializeMultipartUpload,
+  uploadPart,
+  completeMultipartUpload,
+  abortMultipartUpload
 }

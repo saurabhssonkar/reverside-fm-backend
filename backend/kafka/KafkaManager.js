@@ -1,8 +1,8 @@
 // kafkaManager.mjs or kafkaManager.js (with "type": "module" in package.json)
 
 import { Kafka, Partitioners, CompressionTypes } from 'kafkajs';
-import CONFIG from './CONFIG.js';
-import logger from './logger.js';
+import CONFIG from '../CONFIG.js';
+import logger from '../logger.js';
 
 const kafka = new Kafka({
   clientId: CONFIG.kafka.clientId,
@@ -33,7 +33,7 @@ const consumer = kafka.consumer({
 
 const admin = kafka.admin();
 
-async function initialize() {
+async function initializeKafka() {
   try {
     await producer.connect();
     await consumer.connect();
@@ -100,8 +100,8 @@ async function deleteTopicForCamera(cameraId) {
 }
 
 // Export as individual functions
-export {
-  initialize,
+export  {
+  initializeKafka,
   createTopicForCamera,
   sendVideoChunk,
   deleteTopicForCamera,

@@ -1,6 +1,6 @@
 import { createClient } from 'redis';
-import CONFIG from './CONFIG.js';
-import logger from './logger.js';
+import CONFIG from '../CONFIG.js';
+import logger from '../logger.js';
 
 const client = createClient({
     socket: {
@@ -9,7 +9,7 @@ const client = createClient({
     }
 });
 
-export const initializeRedis = async () => {
+ const  initializeRedis = async () => {
     try {
         await client.connect();
         logger.info('Redis connection established');
@@ -19,7 +19,7 @@ export const initializeRedis = async () => {
     }
 };
 
-export const setStreamMetadata = async (cameraId, metadata) => {
+ const setStreamMetadata = async (cameraId, metadata) => {
     const key = `stream:${cameraId}:metadata`;
     try {
         await client.hSet(key, {
@@ -31,13 +31,13 @@ export const setStreamMetadata = async (cameraId, metadata) => {
             uploadId: metadata.uploadId || '',
             s3Key: metadata.s3Key || ''
         });
-        logger.info(`Stream metadata stored for camera: ${cameraId}`);
+        logger.info(`Stream metadata stored for camera: ${metadata}`);
     } catch (error) {
         logger.error(`Failed to store metadata for camera ${cameraId}: ${error.message}`);
     }
 };
 
-export const getStreamMetadata = async (cameraId) => {
+ const getStreamMetadata = async (cameraId) => {
     const key = `stream:${cameraId}:metadata`;
     try {
         const metadata = await client.hGetAll(key);
@@ -48,7 +48,7 @@ export const getStreamMetadata = async (cameraId) => {
     }
 };
 
-export const updateStreamStatus = async (cameraId, status, additionalData = {}) => {
+ const updateStreamStatus = async (cameraId, status, additionalData = {}) => {
     const key = `stream:${cameraId}:metadata`;
     try {
         const updateData = { status, lastUpdated: Date.now(), ...additionalData };
@@ -59,16 +59,17 @@ export const updateStreamStatus = async (cameraId, status, additionalData = {}) 
     }
 };
 
-export const incrementChunkCount = async (cameraId) => {
+ const incrementChunkCount = async (cameraId) => {
     const key = `stream:${cameraId}:metadata`;
     try {
         await client.hIncrBy(key, 'chunkCount', 1);
+        console.log("key",key)
     } catch (error) {
         logger.error(`Failed to increment chunk count for camera ${cameraId}: ${error.message}`);
     }
 };
 
-export const deleteStreamData = async (cameraId) => {
+ const deleteStreamData = async (cameraId) => {
     const key = `stream:${cameraId}:metadata`;
     try {
         await client.del(key);
@@ -78,7 +79,7 @@ export const deleteStreamData = async (cameraId) => {
     }
 };
 
-export const getActiveStreams = async () => {
+  const getActiveStreams = async () => {
     try {
         const keys = await client.keys('stream:*:metadata');
         const activeStreams = [];
@@ -94,3 +95,15 @@ export const getActiveStreams = async () => {
         return [];
     }
 };
+export  {
+    initializeRedis,
+    setStreamMetadata,
+    getActiveStreams,
+    deleteStreamData,
+    updateStreamStatus,
+    incrementChunkCount,
+    getStreamMetadata
+    
+    
+
+}
