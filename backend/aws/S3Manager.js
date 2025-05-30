@@ -17,7 +17,7 @@ const bucketName = CONFIG.aws.bucketName;
     const params = {
       Bucket: bucketName,
       Key: s3Key,
-      ContentType: 'video/mp4',
+      ContentType: 'video/webm',
       // Metadata can be added here if needed
     };
 

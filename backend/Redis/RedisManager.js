@@ -31,7 +31,7 @@ const client = createClient({
             uploadId: metadata.uploadId || '',
             s3Key: metadata.s3Key || ''
         });
-        logger.info(`Stream metadata stored for camera: ${metadata}`);
+        logger.info(`Stream metadata stored for camera:  ${JSON.stringify(metadata)}`);
     } catch (error) {
         logger.error(`Failed to store metadata for camera ${cameraId}: ${error.message}`);
     }

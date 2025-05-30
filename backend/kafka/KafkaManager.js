@@ -4,25 +4,48 @@ import { Kafka, Partitioners, CompressionTypes } from 'kafkajs';
 import CONFIG from '../CONFIG.js';
 import logger from '../logger.js';
 
+// const kafka = new Kafka({
+//   clientId: CONFIG.kafka.clientId,
+//   brokers: CONFIG.kafka.brokers,
+//   maxInFlightRequests: 1,
+//   compression: CompressionTypes.GZIP,
+//   retry: { retries: 3 },
+//   produceMaxBytesPerPartition: 10485760,
+//   produceBufferMaxSize: 10485760,
+// });
+
+
 const kafka = new Kafka({
   clientId: CONFIG.kafka.clientId,
   brokers: CONFIG.kafka.brokers,
   maxInFlightRequests: 1,
-  compression: CompressionTypes.GZIP,
   retry: { retries: 3 },
-  produceMaxBytesPerPartition: 10485760,
-  produceBufferMaxSize: 10485760,
+  requestTimeout: 30000,
+  // THIS IS IMPORTANT
+  requestSizeLimit: 10485760  // 10MB (KafkaJS 2.x+ option)
 });
+
+// const producer = kafka.producer({
+//   createPartitioner: Partitioners.LegacyPartitioner,
+//   compression: CompressionTypes.GZIP,
+//   maxInFlightRequests: 1,
+//   retry: {
+//     retries: 3,
+//     maxRetryTime: 30000,
+//   },
+// });
 
 const producer = kafka.producer({
   createPartitioner: Partitioners.LegacyPartitioner,
-  compression: CompressionTypes.GZIP,
   maxInFlightRequests: 1,
   retry: {
     retries: 3,
     maxRetryTime: 30000,
   },
+  // Optional: Set compression
+  compression: CompressionTypes.GZIP,
 });
+
 
 const consumer = kafka.consumer({
   groupId: 'video-processor-group',
@@ -67,6 +90,10 @@ async function createTopicForCamera(cameraId) {
 }
 
 async function sendVideoChunk(cameraId, chunkData) {
+  console.log('Chunk size before uploadPart:', Buffer.byteLength(chunkData));
+   console.log(' before Sending chunkData size:', chunkData.length);
+                    console.log('Base64 length:', Buffer.byteLength(chunkData.toString('base64')));
+
   const topicName = `camera-stream`;
   try {
     await producer.send({
@@ -77,7 +104,7 @@ async function sendVideoChunk(cameraId, chunkData) {
           cameraId,
           timestamp: Date.now(),
           chunkData: chunkData.toString('base64'),
-          chunkSize: chunkData.length,
+          chunkSize: chunkData.length
         }),
       }],
     });
@@ -100,7 +127,7 @@ async function deleteTopicForCamera(cameraId) {
 }
 
 // Export as individual functions
-export  {
+export {
   initializeKafka,
   createTopicForCamera,
   sendVideoChunk,

@@ -21,13 +21,16 @@ import { resetInactivityTimer } from './utils/resetInactivityTimer.js'
 import AWS from 'aws-sdk';
 import dotenv from 'dotenv';
 import { initialize, processVideoChunk, startConsumer, startStreamForCamera } from './StreamVideo/VideoStreamProcessor.js';
-import { initializeMultipartUpload } from './aws/S3Manager.js';
+import { completeMultipartUpload, initializeMultipartUpload } from './aws/S3Manager.js';
 
 
 
 
 const app = express();
 dotenv.config()
+
+  const videoChunkBuffers = new Map();
+
 
 const __dirname = path.resolve()
 // startKafkaConsumer();
@@ -574,7 +577,6 @@ connections.on('connection', async socket => {
 
   // });
 
-  const videoChunkBuffers = new Map();
   const initializedStreams = new Set();
 
 
@@ -584,6 +586,7 @@ socket.on('recording-chunk', async (arrayBuffer) => {
 
    const cameraId = "camera1"; // or derive dynamically
     const socketId = socket.id;
+    // console.log("socketId",socketId)
 
     // Initialize only once per camera
     if (!initializedStreams.has(cameraId)) {
@@ -603,11 +606,13 @@ socket.on('recording-chunk', async (arrayBuffer) => {
     // If 5MB or more, combine and send to processVideoChunk
     if (bufferState.totalSize >= 5 * 1024 * 1024) {
       const combinedBuffer = mergeChunks(bufferState.chunks, bufferState.totalSize);
+      console.log("Is Buffer:", Buffer.isBuffer(combinedBuffer)); // ✅ should be true
+
           console.log("Current buffered size:", (bufferState.totalSize / (1024 * 1024)).toFixed(2), "MB");
 
 
       // Call your chunk processor
-      await processVideoChunk(1, combinedBuffer);
+      await processVideoChunk(cameraId, combinedBuffer);
     
 
       // Reset buffer for this socket
@@ -718,6 +723,24 @@ app.post('/merge-videos', async (req, res) => {
   });
 });
 
+app.post('/completeupload', async (req, res) => {
+  try {
+    const { uploadId, s3Key } = req.body;
+
+    if (!uploadId || !s3Key) {
+      return res.status(400).json({ error: 'uploadId and s3Key are required' });
+    }
+
+    await completeMultipartUpload(uploadId, s3Key);
+    res.json({ status: "OK" });
+
+  } catch (e) {
+    console.error("Error in /completeupload:", e);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
 // Serve the merged folder publicly
 
 
@@ -765,11 +788,13 @@ app.post('/merge-videos', async (req, res) => {
 // app.use(express.json());
 
 function mergeChunks(chunks, totalSize) {
-  const combined = new Uint8Array(totalSize);
+  const temp = Buffer.alloc(totalSize);
   let offset = 0;
-  for (let chunk of chunks) {
-    combined.set(new Uint8Array(chunk), offset);
-    offset += chunk.byteLength;
+  for (const chunk of chunks) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    buf.copy(temp, offset);
+    offset += buf.length;
   }
-  return combined.buffer;
+  return temp;
 }
+

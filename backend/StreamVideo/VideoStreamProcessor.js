@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
-import { initializeMultipartUpload } from '../aws/S3Manager.js';
+import { completeMultipartUpload, initializeMultipartUpload } from '../aws/S3Manager.js';
 import logger from '../logger.js';
 import { initializeKafka, sendVideoChunk, createTopicForCamera, consumer } from "../kafka/KafkaManager.js"
 import { initializeRedis, incrementChunkCount, getStreamMetadata, updateStreamStatus, setStreamMetadata } from "../Redis/RedisManager.js"
@@ -60,6 +60,10 @@ export async function startStreamForCamera(cameraId) {
 }
 
 export async function processVideoChunk(cameraId, chunkData) {
+  if (!chunkData || !(chunkData instanceof Buffer)) {
+        throw new Error(`Invalid chunkData: Expected Buffer, got ${typeof chunkData}`);
+    }
+
     if (chunkData.length > 10485760) {
         throw new Error(`Chunk size ${chunkData.length} exceeds maximum allowed ${MAX_KAFKA_MESSAGE_SIZE}`);
     }
@@ -92,14 +96,28 @@ export async function startConsumer(number) {
                     const chunkInfo = JSON.parse(message.value.toString());
                     const cameraId = chunkInfo.cameraId;
                     const metadata = await getStreamMetadata(cameraId);
-                    console.log("metadata", metadata)
-                    console.log("cameraId", cameraId)
+                    // console.log("metadata", metadata)
+                    console.log("chunkInfo", chunkInfo.timestamp)
 
-
-
+                    const base64Data = chunkInfo.chunkData;
+                    // console.log("base64Data", base64Data)
+                    const buffer = Buffer.from(base64Data, 'base64');
+                    //   console.log('Chunk size before uploadPart:', Buffer.byteLength(buffer));
+                   
+                    console.log('Raw message size:', message.value.length);
+                    console.log('Raw message:', message.value.toString().substring(0, 200)); // Print first 200 chars
 
                     partNumber++;
-                    await uploadPart(metadata.uploadId, metadata.s3Key, partNumber, chunkInfo.chunkData, uploadedParts);
+                    await uploadPart(metadata.uploadId, metadata.s3Key, partNumber, buffer, uploadedParts);
+
+
+
+
+
+                    // await uploadPart(metadata.uploadId, metadata.s3Key, partNumber, chunkInfo.chunkData, uploadedParts);
+                    // await completeMultipartUpload(metadata.uploadId, metadata.s3Key)
+
+
 
                     if (!metadata) {
                         logger.warn(`No metadata found for camera: ${cameraId}`);
