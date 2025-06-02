@@ -176,11 +176,15 @@ connections.on('connection', async socket => {
 
   socket.on('disconnect', async() => {
     // do some cleanup
-    console.log('peer disconnected')
+    console.log('peer disconnectced')
     consumers = removeItems(consumers, socket.id, 'consumer')
     producers = removeItems(producers, socket.id, 'producer')
     transports = removeItems(transports, socket.id, 'transport')
     // completeUpload(socket.id).catch(console.error);
+     const redisMetadata = await redis.get(`lobby`);
+    //  console.log("redusmetadata",redisMetadata)
+
+
     startConsumer(1)
 
     const { roomName } = peers[socket.id]
@@ -210,6 +214,8 @@ connections.on('connection', async socket => {
       }
     }
     console.log("peers",peers)
+    // await redis.set(`lobby`, peers);
+
 
     // get Router RTP Capabilities
     const rtpCapabilities = router1.rtpCapabilities
@@ -327,7 +333,7 @@ connections.on('connection', async socket => {
   //   }
   // }
 
-  const addProducer = (producer, roomName) => {
+  const addProducer = async(producer, roomName) => {
   // Check if a producer with the same socket ID already exists
   const existingIndex = producers.findIndex(p => p.socketId === socket.id);
   
@@ -343,10 +349,31 @@ connections.on('connection', async socket => {
       index === existingIndex ? { ...p, producer, roomName } : p
     );
   }
+ 
 
-  console.log("@@", producers);
+// Extract socketIds
+const socketIds = {};
+producers.forEach((item, index) => {
+  socketIds[index] = item.socketId;
+});
 
-  // Update peers object
+// Use the roomName from the first item (assuming same room)
+const roomNames = producers[0]?.roomName || '';
+
+// Final object
+const redisPayload = {
+  socketIds,
+  roomNames
+};
+
+// Set in Redis
+await redis.set('lobby', JSON.stringify(redisPayload));
+
+
+
+console.log("@@1", redisPayload);
+
+  // Update peers objecst
   peers[socket.id] = {
     ...peers[socket.id],
     producers: [
@@ -581,58 +608,86 @@ connections.on('connection', async socket => {
 
 
 
+// socket.on('recording-chunk', async (arrayBuffer) => {
+//   try {
+
+//    const cameraId = socket.id; // or derive dynamically
+//     const socketId = socket.id;
+//     // console.log("socketId",socketId)
+
+//     // Initialize only once per camera
+//     if (!initializedStreams.has(cameraId)) {
+//       await startStreamForCamera(cameraId);
+//       initializedStreams.add(cameraId);
+//     } 
+
+//     const bufferState = videoChunkBuffers.get(socketId) || { chunks: [], totalSize: 0 };
+
+//     bufferState.chunks.push(arrayBuffer);
+//     bufferState.totalSize += arrayBuffer.byteLength;
+
+//     // Update buffer state in map
+//     videoChunkBuffers.set(socketId, bufferState);
+
+
+//     // If 5MB or more, combine and send to processVideoChunk
+//     if (bufferState.totalSize >= 5 * 1024 * 1024) {
+//       const combinedBuffer = mergeChunks(bufferState.chunks, bufferState.totalSize);
+//       console.log("Is Buffer:", Buffer.isBuffer(combinedBuffer)); // ✅ should be true
+
+//           console.log("Current buffered size:", (bufferState.totalSize / (1024 * 1024)).toFixed(2), "MB");
+
+
+//       // Call your chunk processor
+//       await processVideoChunk(cameraId, combinedBuffer);
+    
+
+//       // Reset buffer for this socket
+//       videoChunkBuffers.set(socketId, { chunks: [], totalSize: 0 });
+//     }
+  
+//     // Get current upload state or create new one
+  
+//   } catch (error) {
+//     console.error('❌ Upload error:', error);
+//     await abortUpload(socket.id);
+//   }
+// });
+
+
 socket.on('recording-chunk', async (arrayBuffer) => {
   try {
-
-   const cameraId = "camera1"; // or derive dynamically
     const socketId = socket.id;
-    // console.log("socketId",socketId)
+    const cameraId = socketId; // or use a custom camera ID if needed
 
-    // Initialize only once per camera
+    // Initialize stream for camera if not already done
     if (!initializedStreams.has(cameraId)) {
       await startStreamForCamera(cameraId);
       initializedStreams.add(cameraId);
-    } 
-
-    const bufferState = videoChunkBuffers.get(socketId) || { chunks: [], totalSize: 0 };
-
-    bufferState.chunks.push(arrayBuffer);
-    bufferState.totalSize += arrayBuffer.byteLength;
-
-    // Update buffer state in map
-    videoChunkBuffers.set(socketId, bufferState);
-
-
-    // If 5MB or more, combine and send to processVideoChunk
-    if (bufferState.totalSize >= 5 * 1024 * 1024) {
-      const combinedBuffer = mergeChunks(bufferState.chunks, bufferState.totalSize);
-      console.log("Is Buffer:", Buffer.isBuffer(combinedBuffer)); // ✅ should be true
-
-          console.log("Current buffered size:", (bufferState.totalSize / (1024 * 1024)).toFixed(2), "MB");
-
-
-      // Call your chunk processor
-      await processVideoChunk(cameraId, combinedBuffer);
-    
-
-      // Reset buffer for this socket
-      videoChunkBuffers.set(socketId, { chunks: [], totalSize: 0 });
     }
-  
-    // Get current upload state or create new one
-  
+
+    // Append chunk to the buffer for this socket
+    appendToBuffer(socketId, arrayBuffer);
+
+    const { chunks, totalSize } = videoChunkBuffers.get(socketId);
+
+    console.log(`📦 [${socketId}] Buffer size: ${(totalSize / (1024 * 1024)).toFixed(2)} MB`);
+
+    if (totalSize >= 5 * 1024 * 1024) {
+      const combinedBuffer = mergeChunks(chunks, totalSize);
+
+      console.log(`🚀 [${socketId}] Sending combined buffer to processVideoChunk...`);
+      await processVideoChunk(cameraId, combinedBuffer);
+
+      // Reset buffer
+      resetBuffer(socketId);
+    }
+
   } catch (error) {
     console.error('❌ Upload error:', error);
     await abortUpload(socket.id);
   }
 });
-
-
-
-// socket.on('disconnect', () => {
-//   console.log('Client disconnected - completing upload');
-//   completeUpload(socket.id).catch(console.error);
-// });
 
 
 })
@@ -797,4 +852,21 @@ function mergeChunks(chunks, totalSize) {
   }
   return temp;
 }
+
+// Store video chunks for each socket
+
+// Add a chunk to the buffer
+function appendToBuffer(socketId, arrayBuffer) {
+  const bufferState = videoChunkBuffers.get(socketId) || { chunks: [], totalSize: 0 };
+  bufferState.chunks.push(arrayBuffer);
+  bufferState.totalSize += arrayBuffer.byteLength;
+  videoChunkBuffers.set(socketId, bufferState);
+}
+
+
+// Reset buffer for a given socket
+function resetBuffer(socketId) {
+  videoChunkBuffers.set(socketId, { chunks: [], totalSize: 0 });
+}
+
 

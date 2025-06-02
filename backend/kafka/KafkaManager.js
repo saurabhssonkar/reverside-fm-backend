@@ -94,7 +94,7 @@ async function sendVideoChunk(cameraId, chunkData) {
    console.log(' before Sending chunkData size:', chunkData.length);
                     console.log('Base64 length:', Buffer.byteLength(chunkData.toString('base64')));
 
-  const topicName = `camera-stream`;
+  const topicName = cameraId;
   try {
     await producer.send({
       topic: topicName,
